@@ -1,7 +1,7 @@
 use std::{
     collections::VecDeque,
     io::{self, Stdout},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use anyhow::Result;
@@ -13,11 +13,10 @@ use crossterm::{
 use ratatui::{
     Frame, Terminal,
     backend::CrosstermBackend,
-    layout::{Alignment, Constraint, Direction, Layout, Rect},
+    layout::{Alignment, Rect},
     style::{Color, Modifier, Style},
-    symbols,
     text::{Line, Span},
-    widgets::{Axis, Block, Borders, Chart, Dataset, GraphType, Paragraph, Wrap},
+    widgets::Paragraph,
 };
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
@@ -44,12 +43,13 @@ pub async fn run() -> Result<()> {
     let mut app = App::new(update_tx.clone(), update_rx);
     app.start_test();
     let mut ticker = tokio::time::interval(Duration::from_millis(50));
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
         terminal.terminal.draw(|frame| draw(frame, &app))?;
 
         tokio::select! {
-            _ = ticker.tick() => app.tick(),
+            _ = ticker.tick(), if app.status == Status::Running => app.tick(),
             Some(event) = input_rx.recv() => {
                 if let Event::Key(key) = event
                     && key.kind == KeyEventKind::Press
@@ -103,7 +103,6 @@ struct App {
     phase: &'static str,
     speed: f64,
     elapsed: Duration,
-    samples: Vec<(f64, f64)>,
     result: Option<TestResult>,
     error: Option<String>,
     history: VecDeque<TestResult>,
@@ -111,7 +110,6 @@ struct App {
     task: Option<tokio::task::JoinHandle<Result<()>>>,
     sender: tokio::sync::mpsc::UnboundedSender<Update>,
     updates: UnboundedReceiver<Update>,
-    started: Instant,
 }
 
 impl App {
@@ -124,7 +122,6 @@ impl App {
             phase: "Warming up",
             speed: 0.0,
             elapsed: Duration::ZERO,
-            samples: Vec::new(),
             result: None,
             error: None,
             history: VecDeque::new(),
@@ -132,7 +129,6 @@ impl App {
             task: None,
             sender,
             updates,
-            started: Instant::now(),
         }
     }
 
@@ -144,10 +140,8 @@ impl App {
         self.phase = "Warming up";
         self.speed = 0.0;
         self.elapsed = Duration::ZERO;
-        self.samples.clear();
         self.result = None;
         self.error = None;
-        self.started = Instant::now();
         self.task = Some(tokio::spawn(speedtest::run(self.sender.clone())));
     }
 
@@ -161,7 +155,6 @@ impl App {
                 self.phase = "Measuring download speed";
                 self.speed = speed_mbps;
                 self.elapsed = elapsed;
-                self.samples.push((elapsed.as_secs_f64(), speed_mbps));
             }
             Update::Finished(result) => {
                 self.speed = result.speed_mbps;
@@ -188,264 +181,346 @@ impl App {
 
 fn draw(frame: &mut Frame, app: &App) {
     let area = frame.area();
-    if area.width < 58 || area.height < 18 {
-        frame.render_widget(
-            Paragraph::new(
-                "speed needs a terminal at least 58 × 18\n\nResize the window, or press q to quit.",
-            )
-            .alignment(Alignment::Center)
-            .wrap(Wrap { trim: true })
-            .style(Style::default().fg(CYAN)),
-            area,
-        );
+    if area.width == 0 || area.height == 0 {
         return;
     }
 
-    let shell = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Rgb(45, 55, 72)))
-        .title(Line::from(vec![
-            Span::styled(
-                " SPEED ",
-                Style::default().fg(CYAN).add_modifier(Modifier::BOLD),
+    let header_height = 1;
+    let footer_height = u16::from(area.height >= 3);
+    let recent_height = u16::from(area.height >= 5);
+    let scene_height = area
+        .height
+        .saturating_sub(header_height + footer_height + recent_height);
+
+    draw_header(
+        frame,
+        Rect::new(area.x, area.y, area.width, header_height),
+        app,
+    );
+    if scene_height > 0 {
+        draw_scene(
+            frame,
+            Rect::new(area.x, area.y + header_height, area.width, scene_height),
+            app,
+        );
+    }
+    if recent_height > 0 {
+        draw_recent(
+            frame,
+            Rect::new(
+                area.x,
+                area.y + header_height + scene_height,
+                area.width,
+                recent_height,
             ),
-            Span::styled("// FAST.COM ", Style::default().fg(DIM)),
-        ]));
-    let inner = shell.inner(area);
-    frame.render_widget(shell, area);
-
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Min(9),
-            Constraint::Length(3),
-        ])
-        .split(inner);
-
-    draw_header(frame, rows[0], app);
-    let body = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(68), Constraint::Percentage(32)])
-        .split(rows[1]);
-    draw_speed(frame, body[0], app);
-    draw_history(frame, body[1], app);
-    draw_footer(frame, rows[2], app);
+            app,
+        );
+    }
+    if footer_height > 0 {
+        draw_footer(
+            frame,
+            Rect::new(area.x, area.y + area.height - 1, area.width, 1),
+        );
+    }
 }
 
 fn draw_header(frame: &mut Frame, area: Rect, app: &App) {
-    let indicator = match app.status {
-        Status::Running => format!(
-            "{}  {}",
+    let status = match app.status {
+        Status::Running if area.width >= 42 => format!(
+            "{} {}  {:>4.1}s",
             FRAMES[(app.animation / 2) % FRAMES.len()],
-            app.phase
+            app.phase,
+            app.elapsed.as_secs_f64()
         ),
-        Status::Done => "●  Ready for another lap".to_owned(),
-        Status::Failed => "!  Something got in the way".to_owned(),
+        Status::Running if area.width >= 18 => {
+            format!("{} testing", FRAMES[(app.animation / 2) % FRAMES.len()])
+        }
+        Status::Running => FRAMES[(app.animation / 2) % FRAMES.len()].to_owned(),
+        Status::Done => "● landed".to_owned(),
+        Status::Failed => "! signal lost".to_owned(),
     };
-    let right = if app.status == Status::Running {
-        format!("{:>4.1}s / 10s", app.elapsed.as_secs_f64())
-    } else {
-        "SPACE TO RUN".to_owned()
-    };
+    let name = if area.width >= 11 { " speed " } else { "speed" };
+    let used = name.chars().count() + status.chars().count();
+    let gap = " ".repeat((area.width as usize).saturating_sub(used));
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled(format!("  {indicator}"), Style::default().fg(CYAN)),
-            Span::raw(
-                " ".repeat(
-                    area.width
-                        .saturating_sub(indicator.len() as u16 + right.len() as u16 + 6)
-                        as usize,
-                ),
-            ),
-            Span::styled(right, Style::default().fg(DIM)),
-        ]))
-        .block(
-            Block::default()
-                .borders(Borders::BOTTOM)
-                .border_style(Style::default().fg(Color::Rgb(35, 45, 61))),
-        ),
+            Span::styled(name, Style::default().fg(CYAN).add_modifier(Modifier::BOLD)),
+            Span::raw(gap),
+            Span::styled(status, Style::default().fg(DIM)),
+        ])),
         area,
     );
 }
 
-fn draw_speed(frame: &mut Frame, area: Rect, app: &App) {
-    let sections = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(6), Constraint::Min(4)])
-        .split(area);
-
-    let speed_color = if app.status == Status::Failed {
-        Color::Red
-    } else {
-        GREEN
-    };
-    let headline = match app.status {
-        Status::Failed => "NO SIGNAL".to_owned(),
-        _ => format!("{:.1}", app.speed),
-    };
-    let subtitle = match app.status {
-        Status::Failed => app.error.as_deref().unwrap_or("Unknown network error"),
-        Status::Done => connection_mood(app.speed),
-        Status::Running if app.speed == 0.0 => "getting the runway clear…",
-        Status::Running => "Mbps right now",
-    };
-    frame.render_widget(
-        Paragraph::new(vec![
-            Line::from(Span::styled(
-                headline,
-                Style::default()
-                    .fg(speed_color)
-                    .add_modifier(Modifier::BOLD),
-            )),
-            Line::from(Span::styled(subtitle, Style::default().fg(DIM))),
-        ])
-        .alignment(Alignment::Center)
-        .block(
-            Block::default()
-                .borders(Borders::RIGHT)
-                .border_style(Style::default().fg(Color::Rgb(35, 45, 61))),
-        ),
-        sections[0],
-    );
-
-    let max_speed = app
-        .samples
-        .iter()
-        .map(|(_, speed)| *speed)
-        .fold(10.0, f64::max)
-        * 1.15;
-    let datasets = vec![
-        Dataset::default()
-            .name("live")
-            .marker(symbols::Marker::Braille)
-            .graph_type(GraphType::Line)
-            .style(Style::default().fg(PURPLE))
-            .data(&app.samples),
-    ];
-    let chart = Chart::new(datasets)
-        .block(
-            Block::default()
-                .borders(Borders::TOP | Borders::RIGHT)
-                .border_style(Style::default().fg(Color::Rgb(35, 45, 61)))
-                .title(Span::styled(" THROUGHPUT ", Style::default().fg(DIM))),
-        )
-        .x_axis(
-            Axis::default()
-                .bounds([0.0, 10.0])
-                .style(Style::default().fg(Color::Rgb(45, 55, 72))),
-        )
-        .y_axis(
-            Axis::default()
-                .bounds([0.0, max_speed])
-                .style(Style::default().fg(Color::Rgb(45, 55, 72))),
-        );
-    frame.render_widget(chart, sections[1]);
+fn draw_scene(frame: &mut Frame, area: Rect, app: &App) {
+    match app.status {
+        Status::Running => draw_flight(frame, area, app),
+        Status::Done => draw_landed(frame, area, app),
+        Status::Failed => draw_failure(frame, area, app),
+    }
 }
 
-fn draw_history(frame: &mut Frame, area: Rect, app: &App) {
-    let mut lines = vec![Line::from(Span::styled(
-        "  SESSION",
-        Style::default().fg(PURPLE).add_modifier(Modifier::BOLD),
-    ))];
+fn draw_flight(frame: &mut Frame, area: Rect, app: &App) {
+    draw_stars(frame, area, app.animation);
 
-    if let Some(result) = &app.result {
-        lines.extend([
-            Line::from(""),
-            metric("PING", format!("{} ms", result.latency_ms)),
-            metric("SERVER", result.server.clone()),
-            metric("YOU", result.client.clone()),
-            metric(
-                "DATA",
-                format!("{:.1} MB", result.bytes as f64 / 1_000_000.0),
-            ),
-        ]);
-    } else if app.status == Status::Running {
-        lines.extend([
-            Line::from(""),
-            Line::from(Span::styled(
-                "  Racing packets across",
-                Style::default().fg(DIM),
-            )),
-            Line::from(Span::styled(
-                "  Netflix's network…",
-                Style::default().fg(DIM),
-            )),
-        ]);
+    if area.height == 1 {
+        draw_centered(frame, area, live_speed(app, area.width), GREEN, true);
+        return;
     }
 
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        "  RECENT RUNS",
-        Style::default().fg(PURPLE).add_modifier(Modifier::BOLD),
-    )));
-    lines.push(Line::from(""));
-    if app.history.is_empty() {
-        lines.push(Line::from(Span::styled(
-            "  Laps appear here.",
-            Style::default().fg(DIM),
-        )));
+    let rocket = if app.animation % 8 < 4 {
+        Line::from(vec![
+            Span::styled("·≈≈", Style::default().fg(PURPLE)),
+            Span::styled(
+                "╾━━◈▶",
+                Style::default().fg(CYAN).add_modifier(Modifier::BOLD),
+            ),
+        ])
     } else {
-        for (index, result) in app.history.iter().enumerate() {
-            lines.push(Line::from(vec![
-                Span::styled(format!("  {:02}  ", index + 1), Style::default().fg(DIM)),
-                Span::styled(
-                    format!("{:>7.1} Mbps", result.speed_mbps),
-                    Style::default().fg(GREEN),
-                ),
-            ]));
+        Line::from(vec![
+            Span::styled("≈·≈", Style::default().fg(PURPLE)),
+            Span::styled(
+                "╾━━◈▶",
+                Style::default().fg(CYAN).add_modifier(Modifier::BOLD),
+            ),
+        ])
+    };
+    let rocket_width = 8.min(area.width);
+    let drift = ((app.animation / 5) % 5) as i16 - 2;
+    let centered_x = area.x + area.width.saturating_sub(rocket_width) / 2;
+    let rocket_x = centered_x
+        .saturating_add_signed(drift)
+        .clamp(area.x, area.right().saturating_sub(rocket_width));
+    let rocket_y = area.y + area.height.saturating_sub(2) / 2;
+    frame.render_widget(
+        Paragraph::new(rocket),
+        Rect::new(rocket_x, rocket_y, rocket_width, 1),
+    );
+
+    let speed_y = if area.height >= 4 {
+        area.bottom() - 2
+    } else {
+        area.bottom() - 1
+    };
+    draw_centered(
+        frame,
+        Rect::new(area.x, speed_y, area.width, 1),
+        live_speed(app, area.width),
+        GREEN,
+        true,
+    );
+    if area.height >= 6 {
+        draw_centered(
+            frame,
+            Rect::new(area.x, speed_y + 1, area.width, 1),
+            "live download".to_owned(),
+            DIM,
+            false,
+        );
+    }
+}
+
+fn draw_landed(frame: &mut Frame, area: Rect, app: &App) {
+    draw_stars(frame, area, 0);
+    let Some(result) = app.result.as_ref() else {
+        return;
+    };
+
+    if area.height <= 2 {
+        draw_centered(
+            frame,
+            Rect::new(area.x, area.y, area.width, 1),
+            format!("{:.1} Mbps", result.speed_mbps),
+            GREEN,
+            true,
+        );
+        if area.height == 2 {
+            draw_centered(
+                frame,
+                Rect::new(area.x, area.y + 1, area.width, 1),
+                format!("{} ms · {}", result.latency_ms, result.server),
+                DIM,
+                false,
+            );
+        }
+        return;
+    }
+
+    let session = format!("session {:02} · touchdown", app.history.len());
+    draw_centered(
+        frame,
+        Rect::new(area.x, area.y, area.width, 1),
+        session,
+        PURPLE,
+        false,
+    );
+
+    if area.height >= 7 {
+        let ship_y = area.y + 1;
+        for (offset, art) in [" △ ", "╱◇╲", "╰┬╯"].iter().enumerate() {
+            draw_centered(
+                frame,
+                Rect::new(area.x, ship_y + offset as u16, area.width, 1),
+                (*art).to_owned(),
+                CYAN,
+                true,
+            );
         }
     }
 
-    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
+    let speed_y = area.bottom().saturating_sub(3).max(area.y + 1);
+    draw_centered(
+        frame,
+        Rect::new(area.x, speed_y, area.width, 1),
+        format!("{:.1} Mbps", result.speed_mbps),
+        GREEN,
+        true,
+    );
+    draw_centered(
+        frame,
+        Rect::new(area.x, speed_y + 1, area.width, 1),
+        format!("{} ms · {}", result.latency_ms, result.server),
+        DIM,
+        false,
+    );
+    if area.height >= 4 {
+        draw_centered(
+            frame,
+            Rect::new(area.x, speed_y + 2, area.width, 1),
+            planet_surface(area.width),
+            Color::Rgb(82, 144, 174),
+            false,
+        );
+    }
 }
 
-fn metric(label: &str, value: String) -> Line<'static> {
-    Line::from(vec![
-        Span::styled(format!("  {label:<7}"), Style::default().fg(DIM)),
-        Span::styled(value, Style::default().fg(Color::White)),
-    ])
-}
-
-fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
-    let runner = if app.status == Status::Running {
-        let width = area.width.saturating_sub(34).max(1) as usize;
-        let position = (app.animation / 2) % width;
-        format!(
-            "{}◆{}",
-            "·".repeat(position),
-            "·".repeat(width.saturating_sub(position + 1))
-        )
+fn draw_failure(frame: &mut Frame, area: Rect, app: &App) {
+    draw_stars(frame, area, 0);
+    let message = if area.width < 36 {
+        "press space to retry"
     } else {
-        "────────────────────".to_owned()
+        app.error.as_deref().unwrap_or("Network test failed")
     };
+    let middle = area.y + area.height / 2;
+    draw_centered(
+        frame,
+        Rect::new(area.x, middle.saturating_sub(1), area.width, 1),
+        "signal lost".to_owned(),
+        Color::Red,
+        true,
+    );
+    if area.height >= 2 {
+        draw_centered(
+            frame,
+            Rect::new(area.x, middle, area.width, 1),
+            message.to_owned(),
+            DIM,
+            false,
+        );
+    }
+}
+
+fn draw_stars(frame: &mut Frame, area: Rect, animation: usize) {
+    let offset = animation / 2;
+    let lines = (0..area.height)
+        .map(|row| {
+            let stars = (0..area.width)
+                .map(|column| {
+                    let x = column as usize + offset;
+                    let hash = x.wrapping_mul(31) ^ (row as usize).wrapping_mul(73);
+                    if hash.is_multiple_of(97) {
+                        '✦'
+                    } else if hash.is_multiple_of(43) {
+                        '·'
+                    } else if hash.is_multiple_of(71) {
+                        '*'
+                    } else {
+                        ' '
+                    }
+                })
+                .collect::<String>();
+            Line::from(stars)
+        })
+        .collect::<Vec<_>>();
     frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(format!("  {runner}  "), Style::default().fg(PURPLE)),
-            Span::styled(
-                "SPACE/ENTER",
-                Style::default().fg(CYAN).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" rerun   ", Style::default().fg(DIM)),
-            Span::styled("Q", Style::default().fg(CYAN).add_modifier(Modifier::BOLD)),
-            Span::styled(" quit", Style::default().fg(DIM)),
-        ]))
-        .alignment(Alignment::Center)
-        .block(
-            Block::default()
-                .borders(Borders::TOP)
-                .border_style(Style::default().fg(Color::Rgb(35, 45, 61))),
-        ),
+        Paragraph::new(lines).style(Style::default().fg(Color::Rgb(65, 72, 112))),
         area,
     );
 }
 
-fn connection_mood(speed: f64) -> &'static str {
-    match speed {
-        speed if speed >= 500.0 => "warp speed — ridiculously fast",
-        speed if speed >= 100.0 => "flying — 4K has room to spare",
-        speed if speed >= 25.0 => "cruising — streaming looks great",
-        speed if speed >= 10.0 => "steady — everyday browsing is covered",
-        _ => "taking the scenic route",
+fn draw_recent(frame: &mut Frame, area: Rect, app: &App) {
+    let line = if app.history.is_empty() {
+        Line::from(vec![
+            Span::styled(" recent  ", Style::default().fg(PURPLE)),
+            Span::styled(
+                if area.width < 24 {
+                    "—"
+                } else {
+                    "waiting for the first run"
+                },
+                Style::default().fg(DIM),
+            ),
+        ])
+    } else {
+        let mut spans = vec![Span::styled(
+            " recent  ",
+            Style::default().fg(PURPLE).add_modifier(Modifier::BOLD),
+        )];
+        for (index, result) in app.history.iter().enumerate() {
+            if index > 0 {
+                spans.push(Span::styled("  ·  ", Style::default().fg(DIM)));
+            }
+            spans.push(Span::styled(
+                format!("{:.1}", result.speed_mbps),
+                Style::default().fg(GREEN),
+            ));
+        }
+        spans.push(Span::styled(" Mbps", Style::default().fg(DIM)));
+        Line::from(spans)
+    };
+    frame.render_widget(Paragraph::new(line).alignment(Alignment::Center), area);
+}
+
+fn draw_footer(frame: &mut Frame, area: Rect) {
+    let controls = if area.width >= 38 {
+        "space / enter  rerun     q  quit"
+    } else if area.width >= 24 {
+        "space rerun  ·  q quit"
+    } else {
+        "space · q"
+    };
+    frame.render_widget(
+        Paragraph::new(controls)
+            .alignment(Alignment::Center)
+            .style(Style::default().fg(DIM)),
+        area,
+    );
+}
+
+fn draw_centered(frame: &mut Frame, area: Rect, text: String, color: Color, bold: bool) {
+    let mut style = Style::default().fg(color);
+    if bold {
+        style = style.add_modifier(Modifier::BOLD);
     }
+    frame.render_widget(
+        Paragraph::new(text)
+            .alignment(Alignment::Center)
+            .style(style),
+        area,
+    );
+}
+
+fn live_speed(app: &App, width: u16) -> String {
+    if app.speed > 0.0 {
+        format!("{:.1} Mbps", app.speed)
+    } else if width < 24 {
+        "finding route…".to_owned()
+    } else {
+        "finding a clear route…".to_owned()
+    }
+}
+
+fn planet_surface(width: u16) -> String {
+    let dots = width.saturating_sub(8).clamp(3, 28) as usize;
+    format!("· {} ·", "· ".repeat(dots / 2))
 }

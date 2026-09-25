@@ -3,17 +3,18 @@
 An interactive, playful [Fast.com](https://fast.com) speed test for your terminal. It runs once when opened, then stays quiet until you press <kbd>Space</kbd> or <kbd>Enter</kbd> for another lap.
 
 ```text
- SPEED // FAST.COM
- ●  Ready for another lap
-
-              287.4
-          flying — 4K has room to spare
-
-    ⣀⣀⡀      ⢀⣤⣶⣿⣿⣶⣤⣀
-       ⠉⠛⠿⠿⠛⠉
-
- SPACE/ENTER rerun   Q quit
+ speed                          ● landed
+                 △
+                ╱◇╲
+                ╰┬╯
+             287.4 Mbps
+          24 ms · Yangon, MM
+        · · · · · · · · ·
+ recent  287.4  ·  251.8 Mbps
+ space / enter  rerun     q  quit
 ```
+
+The borderless interface adapts all the way down to tiny terminal panes: stars move past the ship while a test is running, then the ship lands beside the completed session stats.
 
 ## Install
 

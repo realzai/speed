@@ -24,7 +24,6 @@ pub struct TestResult {
     pub latency_ms: u64,
     pub bytes: u64,
     pub server: String,
-    pub client: String,
 }
 
 #[derive(Clone, Debug)]
@@ -43,13 +42,7 @@ pub struct Sample {
 
 #[derive(Debug, Deserialize)]
 struct ApiResponse {
-    client: ApiClient,
     targets: Vec<Target>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ApiClient {
-    location: Location,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -109,7 +102,6 @@ async fn run_inner(sender: &UnboundedSender<Update>) -> Result<()> {
             latency_ms,
             bytes,
             server: target.location.label(),
-            client: api.client.location.label(),
         }),
     );
 
