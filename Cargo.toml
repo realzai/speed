@@ -1,0 +1,22 @@
+[package]
+name = "speed"
+version = "1.0.0"
+edition = "2024"
+description = "A playful, interactive Fast.com speed test for your terminal"
+license = "MIT"
+repository = "https://github.com/realzai/speed"
+keywords = ["cli", "fast.com", "network", "speedtest", "tui"]
+categories = ["command-line-utilities"]
+
+[dependencies]
+anyhow = "1.0"
+crossterm = "0.29"
+futures-util = "0.3"
+ratatui = "0.30"
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "stream"] }
+serde = { version = "1.0", features = ["derive"] }
+tokio = { version = "1.48", features = ["macros", "rt-multi-thread", "sync", "time"] }
+
+[profile.release]
+lto = "thin"
+strip = true
