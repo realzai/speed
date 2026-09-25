@@ -263,61 +263,40 @@ fn draw_scene(frame: &mut Frame, area: Rect, app: &App) {
 fn draw_flight(frame: &mut Frame, area: Rect, app: &App) {
     draw_stars(frame, area, app.animation);
 
-    if area.height == 1 {
-        draw_centered(frame, area, live_speed(app, area.width), GREEN, true);
+    let speed_rows = big_speed_rows(app.speed);
+    let speed_width = speed_rows
+        .first()
+        .map_or(0, |line| line.chars().count() as u16);
+    if area.height >= 5 && speed_width <= area.width {
+        let ship_height = area.height - 4;
+        draw_ship(
+            frame,
+            Rect::new(area.x, area.y, area.width, ship_height),
+            true,
+            app.animation,
+        );
+        draw_big_speed(
+            frame,
+            Rect::new(area.x, area.bottom() - 4, area.width, 4),
+            speed_rows,
+        );
         return;
     }
 
-    let rocket = if app.animation % 8 < 4 {
-        Line::from(vec![
-            Span::styled("·≈≈", Style::default().fg(PURPLE)),
-            Span::styled(
-                "╾━━◈▶",
-                Style::default().fg(CYAN).add_modifier(Modifier::BOLD),
-            ),
-        ])
+    let compact = if app.speed > 0.0 {
+        format!("current  {:.1} Mbps", app.speed)
+    } else if area.width < 24 {
+        "finding route…".to_owned()
     } else {
-        Line::from(vec![
-            Span::styled("≈·≈", Style::default().fg(PURPLE)),
-            Span::styled(
-                "╾━━◈▶",
-                Style::default().fg(CYAN).add_modifier(Modifier::BOLD),
-            ),
-        ])
-    };
-    let rocket_width = 8.min(area.width);
-    let drift = ((app.animation / 5) % 5) as i16 - 2;
-    let centered_x = area.x + area.width.saturating_sub(rocket_width) / 2;
-    let rocket_x = centered_x
-        .saturating_add_signed(drift)
-        .clamp(area.x, area.right().saturating_sub(rocket_width));
-    let rocket_y = area.y + area.height.saturating_sub(2) / 2;
-    frame.render_widget(
-        Paragraph::new(rocket),
-        Rect::new(rocket_x, rocket_y, rocket_width, 1),
-    );
-
-    let speed_y = if area.height >= 4 {
-        area.bottom() - 2
-    } else {
-        area.bottom() - 1
+        "finding a clear route…".to_owned()
     };
     draw_centered(
         frame,
-        Rect::new(area.x, speed_y, area.width, 1),
-        live_speed(app, area.width),
+        Rect::new(area.x, area.y + area.height / 2, area.width, 1),
+        compact,
         GREEN,
         true,
     );
-    if area.height >= 6 {
-        draw_centered(
-            frame,
-            Rect::new(area.x, speed_y + 1, area.width, 1),
-            "live download".to_owned(),
-            DIM,
-            false,
-        );
-    }
 }
 
 fn draw_landed(frame: &mut Frame, area: Rect, app: &App) {
@@ -326,11 +305,53 @@ fn draw_landed(frame: &mut Frame, area: Rect, app: &App) {
         return;
     };
 
+    let speed_rows = big_speed_rows(result.speed_mbps);
+    let speed_width = speed_rows
+        .first()
+        .map_or(0, |line| line.chars().count() as u16);
+    if area.height >= 5 && speed_width <= area.width {
+        let has_surface = area.height >= 6;
+        let stats_height = 5 + u16::from(has_surface);
+        let ship_height = area.height.saturating_sub(stats_height);
+        if ship_height > 0 {
+            draw_ship(
+                frame,
+                Rect::new(area.x, area.y, area.width, ship_height),
+                false,
+                app.animation,
+            );
+        }
+        let speed_y = area.bottom() - stats_height;
+        draw_big_speed(frame, Rect::new(area.x, speed_y, area.width, 4), speed_rows);
+        draw_centered(
+            frame,
+            Rect::new(area.x, speed_y + 4, area.width, 1),
+            format!(
+                "session {:02} · {} ms · {}",
+                app.history.len(),
+                result.latency_ms,
+                result.server
+            ),
+            DIM,
+            false,
+        );
+        if has_surface {
+            draw_centered(
+                frame,
+                Rect::new(area.x, speed_y + 5, area.width, 1),
+                planet_surface(area.width),
+                Color::Rgb(82, 144, 174),
+                false,
+            );
+        }
+        return;
+    }
+
     if area.height <= 2 {
         draw_centered(
             frame,
             Rect::new(area.x, area.y, area.width, 1),
-            format!("{:.1} Mbps", result.speed_mbps),
+            format!("current  {:.1} Mbps", result.speed_mbps),
             GREEN,
             true,
         );
@@ -346,51 +367,131 @@ fn draw_landed(frame: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
-    let session = format!("session {:02} · touchdown", app.history.len());
     draw_centered(
         frame,
         Rect::new(area.x, area.y, area.width, 1),
-        session,
-        PURPLE,
-        false,
-    );
-
-    if area.height >= 7 {
-        let ship_y = area.y + 1;
-        for (offset, art) in [" △ ", "╱◇╲", "╰┬╯"].iter().enumerate() {
-            draw_centered(
-                frame,
-                Rect::new(area.x, ship_y + offset as u16, area.width, 1),
-                (*art).to_owned(),
-                CYAN,
-                true,
-            );
-        }
-    }
-
-    let speed_y = area.bottom().saturating_sub(3).max(area.y + 1);
-    draw_centered(
-        frame,
-        Rect::new(area.x, speed_y, area.width, 1),
-        format!("{:.1} Mbps", result.speed_mbps),
+        format!("current  {:.1} Mbps", result.speed_mbps),
         GREEN,
         true,
     );
     draw_centered(
         frame,
-        Rect::new(area.x, speed_y + 1, area.width, 1),
-        format!("{} ms · {}", result.latency_ms, result.server),
+        Rect::new(area.x, area.y + 1, area.width, 1),
+        format!(
+            "session {:02} · {} ms · {}",
+            app.history.len(),
+            result.latency_ms,
+            result.server
+        ),
         DIM,
         false,
     );
-    if area.height >= 4 {
+}
+
+fn draw_ship(frame: &mut Frame, area: Rect, flying: bool, animation: usize) {
+    if area.height == 0 {
+        return;
+    }
+    if area.height < 6 || area.width < 12 {
+        let craft = if flying {
+            if animation % 8 < 4 {
+                "≈≈  🚀"
+            } else {
+                "·≈  🚀"
+            }
+        } else {
+            "    🚀"
+        };
         draw_centered(
             frame,
-            Rect::new(area.x, speed_y + 2, area.width, 1),
-            planet_surface(area.width),
-            Color::Rgb(82, 144, 174),
-            false,
+            Rect::new(area.x, area.y + area.height / 2, area.width, 1),
+            craft.to_owned(),
+            CYAN,
+            true,
         );
+        return;
+    }
+
+    let exhaust = if animation % 8 < 4 {
+        "  *  *  "
+    } else {
+        "  ✦  ✦  "
+    };
+    let art = [
+        "   /\\   ",
+        "  /  \\  ",
+        " /_◇__\\ ",
+        " |    | ",
+        "/|_||_|\\",
+    ];
+    let art_height = art.len() as u16 + u16::from(flying);
+    let start_y = area.y + area.height.saturating_sub(art_height) / 2;
+    for (offset, line) in art.iter().enumerate() {
+        draw_centered(
+            frame,
+            Rect::new(area.x, start_y + offset as u16, area.width, 1),
+            (*line).to_owned(),
+            CYAN,
+            true,
+        );
+    }
+    if flying {
+        draw_centered(
+            frame,
+            Rect::new(area.x, start_y + art.len() as u16, area.width, 1),
+            exhaust.to_owned(),
+            PURPLE,
+            true,
+        );
+    }
+}
+
+fn draw_big_speed(frame: &mut Frame, area: Rect, rows: Vec<String>) {
+    let lines = rows
+        .into_iter()
+        .map(|row| {
+            Line::from(Span::styled(
+                row,
+                Style::default().fg(GREEN).add_modifier(Modifier::BOLD),
+            ))
+        })
+        .chain(std::iter::once(Line::from(Span::styled(
+            "CURRENT · Mbps",
+            Style::default().fg(DIM),
+        ))))
+        .collect::<Vec<_>>();
+    frame.render_widget(Paragraph::new(lines).alignment(Alignment::Center), area);
+}
+
+fn big_speed_rows(speed: f64) -> Vec<String> {
+    let value = format!("{speed:.1}");
+    let mut rows = vec![String::new(), String::new(), String::new()];
+    for (index, character) in value.chars().enumerate() {
+        let glyph = speed_glyph(character);
+        for (row, pattern) in rows.iter_mut().zip(glyph) {
+            if index > 0 {
+                row.push(' ');
+            }
+            row.push_str(pattern);
+        }
+    }
+    rows
+}
+
+fn speed_glyph(character: char) -> [&'static str; 3] {
+    match character {
+        '0' => ["╭─╮", "│ │", "╰─╯"],
+        '1' => [" ╷ ", " │ ", " ╵ "],
+        '2' => ["╭─╮", "╭─╯", "╰─╴"],
+        '3' => ["╭─╮", " ╶┤", "╰─╯"],
+        '4' => ["╷ ╷", "╰─┤", "  ╵"],
+        '5' => ["╭─╴", "╰─╮", "╰─╯"],
+        '6' => ["╭─╴", "├─╮", "╰─╯"],
+        '7' => ["╭─╮", "  │", "  ╵"],
+        '8' => ["╭─╮", "├─┤", "╰─╯"],
+        '9' => ["╭─╮", "╰─┤", "  ╵"],
+        '.' => [" ", " ", "•"],
+        _ => ["   ", "   ", "   "],
     }
 }
 
@@ -508,16 +609,6 @@ fn draw_centered(frame: &mut Frame, area: Rect, text: String, color: Color, bold
             .style(style),
         area,
     );
-}
-
-fn live_speed(app: &App, width: u16) -> String {
-    if app.speed > 0.0 {
-        format!("{:.1} Mbps", app.speed)
-    } else if width < 24 {
-        "finding route…".to_owned()
-    } else {
-        "finding a clear route…".to_owned()
-    }
 }
 
 fn planet_surface(width: u16) -> String {

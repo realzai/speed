@@ -4,12 +4,17 @@ An interactive, playful [Fast.com](https://fast.com) speed test for your termina
 
 ```text
  speed                          ● landed
-                 △
-                ╱◇╲
-                ╰┬╯
-             287.4 Mbps
-          24 ms · Yangon, MM
-        · · · · · · · · ·
+                  /\
+                 /  \
+                /_◇__\
+                |    |
+               /|_||_|\
+
+        ╭─╮ ╭─╮ ╭─╮   ╷ ╷
+        ╭─╯ ├─┤   │   ╰─┤
+        ╰─╴ ╰─╯   ╵ •   ╵
+              CURRENT · Mbps
+       session 03 · 24 ms · Yangon, MM
  recent  287.4  ·  251.8 Mbps
  space / enter  rerun     q  quit
 ```
