@@ -4,11 +4,10 @@ An interactive, playful [Fast.com](https://fast.com) speed test for your termina
 
 ```text
  speed                          ● landed
-                  /\
-                 /  \
-                /_◇__\
-                |    |
-               /|_||_|\
+                        __
+                   ____/  \___
+              <|      ◇      )▶
+                   ‾‾‾\____/‾‾
 
         ╭─╮ ╭─╮ ╭─╮   ╷ ╷
         ╭─╯ ├─┤   │   ╰─┤

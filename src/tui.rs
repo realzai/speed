@@ -392,15 +392,11 @@ fn draw_ship(frame: &mut Frame, area: Rect, flying: bool, animation: usize) {
     if area.height == 0 {
         return;
     }
-    if area.height < 6 || area.width < 12 {
+    if area.height < 4 || area.width < 28 {
         let craft = if flying {
-            if animation % 8 < 4 {
-                "≈≈  🚀"
-            } else {
-                "·≈  🚀"
-            }
+            ["·  ≈≈[◇]▶", " ≈·≈≈[◇]▶", "·≈   ≈[◇]▶", "  ·≈≈≈[◇]▶"][(animation / 3) % 4]
         } else {
-            "    🚀"
+            "    [◇]▶"
         };
         draw_centered(
             frame,
@@ -412,37 +408,50 @@ fn draw_ship(frame: &mut Frame, area: Rect, flying: bool, animation: usize) {
         return;
     }
 
-    let exhaust = if animation % 8 < 4 {
-        "  *  *  "
-    } else {
-        "  ✦  ✦  "
-    };
     let art = [
-        "   /\\   ",
-        "  /  \\  ",
-        " /_◇__\\ ",
-        " |    | ",
-        "/|_||_|\\",
+        "       __       ",
+        "  ____/  \\___   ",
+        "<|    ◇      )▶ ",
+        "  ‾‾‾\\____/‾‾   ",
     ];
-    let art_height = art.len() as u16 + u16::from(flying);
-    let start_y = area.y + area.height.saturating_sub(art_height) / 2;
+    let bob = if flying {
+        [0_i16, -1, -1, 0, 1, 1, 0, 0][(animation / 4) % 8]
+    } else {
+        0
+    };
+    let start_y = (area.y + area.height.saturating_sub(art.len() as u16) / 2)
+        .saturating_add_signed(bob)
+        .clamp(area.y, area.bottom().saturating_sub(art.len() as u16));
+    let body_width = 16;
+    let plume_width = 8;
+    let group_width = body_width + u16::from(flying) * plume_width;
+    let group_x = area.x + area.width.saturating_sub(group_width) / 2;
+    let body_x = group_x + u16::from(flying) * plume_width;
     for (offset, line) in art.iter().enumerate() {
-        draw_centered(
-            frame,
-            Rect::new(area.x, start_y + offset as u16, area.width, 1),
-            (*line).to_owned(),
-            CYAN,
-            true,
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                *line,
+                Style::default().fg(CYAN).add_modifier(Modifier::BOLD),
+            )),
+            Rect::new(body_x, start_y + offset as u16, body_width, 1),
         );
     }
     if flying {
-        draw_centered(
-            frame,
-            Rect::new(area.x, start_y + art.len() as u16, area.width, 1),
-            exhaust.to_owned(),
-            PURPLE,
-            true,
-        );
+        let plume = [
+            ["  ·≈    ", "≈≈≈≈≈≈≈≈", " ·   ≈  "],
+            [" ·  ≈·  ", "≈≈≈≈≈≈≈ ", "   ·≈   "],
+            ["   ≈ ·  ", "≈≈≈≈≈≈≈≈", " ·≈     "],
+            [" ·≈     ", " ≈≈≈≈≈≈≈", "    ≈·  "],
+        ][(animation / 3) % 4];
+        for (offset, line) in plume.iter().enumerate() {
+            frame.render_widget(
+                Paragraph::new(Span::styled(
+                    *line,
+                    Style::default().fg(PURPLE).add_modifier(Modifier::BOLD),
+                )),
+                Rect::new(group_x, start_y + 1 + offset as u16, plume_width, 1),
+            );
+        }
     }
 }
 
@@ -521,24 +530,35 @@ fn draw_failure(frame: &mut Frame, area: Rect, app: &App) {
     }
 }
 
+fn star_hash(x: usize, y: usize, salt: usize) -> usize {
+    x.wrapping_mul(31 + salt) ^ y.wrapping_mul(73 + salt * 3) ^ salt.wrapping_mul(1_009)
+}
+
+fn star_at(column: u16, row: u16, animation: usize) -> char {
+    let x = column as usize;
+    let y = row as usize;
+    let fast = star_hash(x + animation, y, 7);
+    let medium = star_hash(x + animation / 3, y, 3);
+    let distant = star_hash(x + animation / 8, y, 1);
+
+    if fast.is_multiple_of(211) {
+        '─'
+    } else if medium.is_multiple_of(137) {
+        '✦'
+    } else if distant.is_multiple_of(59) {
+        '·'
+    } else if distant.is_multiple_of(83) {
+        '.'
+    } else {
+        ' '
+    }
+}
+
 fn draw_stars(frame: &mut Frame, area: Rect, animation: usize) {
-    let offset = animation / 2;
     let lines = (0..area.height)
         .map(|row| {
             let stars = (0..area.width)
-                .map(|column| {
-                    let x = column as usize + offset;
-                    let hash = x.wrapping_mul(31) ^ (row as usize).wrapping_mul(73);
-                    if hash.is_multiple_of(97) {
-                        '✦'
-                    } else if hash.is_multiple_of(43) {
-                        '·'
-                    } else if hash.is_multiple_of(71) {
-                        '*'
-                    } else {
-                        ' '
-                    }
-                })
+                .map(|column| star_at(column, row, animation))
                 .collect::<String>();
             Line::from(stars)
         })
